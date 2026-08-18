@@ -1,8 +1,6 @@
 import asyncio
-import os
-import re
 import time
-
+import re
 import aiohttp
 from aiohttp import web
 
@@ -17,23 +15,22 @@ from telethon.sessions import StringSession
 from telethon.network import ConnectionTcpAbridged
 
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
+# ================= CONFIG =================
 
-API_ID = int(os.environ["API_ID"])
-API_HASH = os.environ["API_HASH"]
-BOT_TOKEN = os.environ["BOT_TOKEN"]
-CHAT_ID = int(os.environ["CHAT_ID"])
-SESSION_STRING = os.environ["SESSION_STRING"]
+API_ID         = 28807546
+API_HASH       = "37624d57b1d83e6bb51b2db777658d0f"
+BOT_TOKEN      = "7913078821:AAH_jUTHXlFx66daqBkYY7mKw7UZnwpp_A0"
+CHAT_ID        = 1692583809
+SESSION_STRING = "1BJWap1wBuzx_OTCt3Xy_83N0Eej5M2__CbVLaXQzxovBXI..."
+SOURCE_CHAT    = "CoinSonarV2"
+PORT           = 8080
 
-SOURCE_CHAT = os.getenv("SOURCE_CHAT", "CoinSonarV2")
-PORT = int(os.getenv("PORT", "8080"))
+# ==========================================
 
 
 # ============================================================
 # TELEGRAM USER CLIENT
-# This client ONLY listens to CoinSonarV2.
+# This listens to CoinSonarV2.
 # ============================================================
 
 client = TelegramClient(
@@ -50,7 +47,7 @@ client = TelegramClient(
 )
 
 
-# Persistent HTTP session for Telegram Bot API
+# Persistent HTTP session used to send the bot message
 http_session = None
 
 
@@ -70,12 +67,12 @@ def format_alert(text):
 
 
 # ============================================================
-# SEND TELEGRAM NOTIFICATION
-# Uses Telegram Bot API directly.
-# No second Telethon bot login.
+# SEND NOTIFICATION
+# Direct Telegram Bot API
 # ============================================================
 
 async def send_notification(text, coin="UNKNOWN", source_age=None):
+
     global http_session
 
     if http_session is None or http_session.closed:
@@ -94,37 +91,55 @@ async def send_notification(text, coin="UNKNOWN", source_age=None):
     started = time.perf_counter()
 
     try:
-        async with http_session.post(url, json=payload) as response:
+
+        async with http_session.post(
+            url,
+            json=payload
+        ) as response:
+
             body = await response.text()
 
             elapsed = time.perf_counter() - started
 
             if response.status == 200:
+
+                if source_age is not None:
+
+                    total_age = (
+                        time.time()
+                        - (
+                            time.time()
+                            - source_age
+                        )
+                    )
+
                 print(
                     f"📤 SENT {coin} | "
                     f"API={elapsed:.3f}s | "
-                    f"source_age={source_age:.3f}s"
-                    if source_age is not None
-                    else
-                    f"📤 SENT {coin} | API={elapsed:.3f}s",
+                    f"source_age={source_age:.3f}s",
                     flush=True,
                 )
+
                 return True
 
             # Telegram rate limit
             if response.status == 429:
+
                 try:
                     data = await response.json()
+
                     retry_after = (
                         data.get("parameters", {})
                         .get("retry_after", 1)
                     )
+
                 except Exception:
+
                     retry_after = 1
 
                 print(
-                    f"⚠️ Telegram rate limit. "
-                    f"Retry after {retry_after}s",
+                    f"⚠️ Telegram rate limit: "
+                    f"retrying in {retry_after}s",
                     flush=True,
                 )
 
@@ -138,10 +153,12 @@ async def send_notification(text, coin="UNKNOWN", source_age=None):
                     retry_body = await retry_response.text()
 
                     if retry_response.status == 200:
+
                         print(
                             f"📤 RETRY SENT {coin}",
                             flush=True,
                         )
+
                         return True
 
                     print(
@@ -150,6 +167,7 @@ async def send_notification(text, coin="UNKNOWN", source_age=None):
                         f"{retry_body}",
                         flush=True,
                     )
+
                     return False
 
             print(
@@ -161,17 +179,21 @@ async def send_notification(text, coin="UNKNOWN", source_age=None):
             return False
 
     except asyncio.TimeoutError:
+
         print(
             f"❌ Telegram API timeout for {coin}",
             flush=True,
         )
+
         return False
 
     except Exception as e:
+
         print(
             f"❌ Send error for {coin}: {repr(e)}",
             flush=True,
         )
+
         return False
 
 
@@ -182,22 +204,31 @@ async def send_notification(text, coin="UNKNOWN", source_age=None):
 async def process(text, source_timestamp=None):
 
     if not text:
-        print("EMPTY TEXT", flush=True)
+
+        print(
+            "EMPTY TEXT",
+            flush=True,
+        )
+
         return
 
     processing_started = time.perf_counter()
 
-    # Calculate how old the Telegram message is
+    # Calculate actual age of CoinSonar message
     source_age = None
 
     if source_timestamp is not None:
+
         source_age = max(
             0.0,
             time.time() - source_timestamp
         )
 
-    # Extract coin
-    coin_match = re.search(r"\$(\w+)", text)
+    # Find coin
+    coin_match = re.search(
+        r"\$(\w+)",
+        text
+    )
 
     coin = (
         f"${coin_match.group(1)}"
@@ -220,16 +251,21 @@ async def process(text, source_timestamp=None):
         flush=True,
     )
 
-    # Filter
+    # ========================================================
+    # FILTER
+    # ========================================================
+
     if matches(text):
 
         filter_elapsed = (
-            time.perf_counter() - processing_started
+            time.perf_counter()
+            - processing_started
         )
 
         print(
             f"✅ MATCH {coin} | "
-            f"filter={filter_elapsed * 1000:.1f}ms",
+            f"filter="
+            f"{filter_elapsed * 1000:.1f}ms",
             flush=True,
         )
 
@@ -251,10 +287,14 @@ async def process(text, source_timestamp=None):
 
 
 # ============================================================
-# NEW MESSAGE HANDLER
+# NEW MESSAGE
 # ============================================================
 
-@client.on(events.NewMessage(chats=SOURCE_CHAT))
+@client.on(
+    events.NewMessage(
+        chats=SOURCE_CHAT
+    )
+)
 async def new_message_handler(event):
 
     try:
@@ -273,14 +313,16 @@ async def new_message_handler(event):
         age = (
             max(
                 0.0,
-                time.time() - message_timestamp
+                time.time()
+                - message_timestamp
             )
             if message_timestamp
             else 0.0
         )
 
         print(
-            f"⏱ NEW MESSAGE AGE = {age:.3f}s",
+            f"⏱ NEW MESSAGE AGE = "
+            f"{age:.3f}s",
             flush=True,
         )
 
@@ -292,16 +334,21 @@ async def new_message_handler(event):
     except Exception as e:
 
         print(
-            f"❌ New message handler error: {repr(e)}",
+            f"❌ New message handler error: "
+            f"{repr(e)}",
             flush=True,
         )
 
 
 # ============================================================
-# ALBUM HANDLER
+# ALBUM
 # ============================================================
 
-@client.on(events.Album(chats=SOURCE_CHAT))
+@client.on(
+    events.Album(
+        chats=SOURCE_CHAT
+    )
+)
 async def album_handler(event):
 
     try:
@@ -320,14 +367,16 @@ async def album_handler(event):
         age = (
             max(
                 0.0,
-                time.time() - message_timestamp
+                time.time()
+                - message_timestamp
             )
             if message_timestamp
             else 0.0
         )
 
         print(
-            f"⏱ ALBUM AGE = {age:.3f}s",
+            f"⏱ ALBUM AGE = "
+            f"{age:.3f}s",
             flush=True,
         )
 
@@ -339,13 +388,14 @@ async def album_handler(event):
     except Exception as e:
 
         print(
-            f"❌ Album handler error: {repr(e)}",
+            f"❌ Album handler error: "
+            f"{repr(e)}",
             flush=True,
         )
 
 
 # ============================================================
-# CONNECTION MONITOR
+# CONNECTION PING
 # ============================================================
 
 async def ping_loop():
@@ -360,7 +410,7 @@ async def ping_loop():
 
                 print(
                     "⚠️ Telegram disconnected. "
-                    "Attempting reconnect...",
+                    "Reconnecting...",
                     flush=True,
                 )
 
@@ -389,14 +439,19 @@ async def ping_loop():
 
 async def health(request):
 
-    return web.Response(text="ok")
+    return web.Response(
+        text="ok"
+    )
 
 
 async def start_web():
 
     app = web.Application()
 
-    app.router.add_get("/", health)
+    app.router.add_get(
+        "/",
+        health
+    )
 
     runner = web.AppRunner(app)
 
@@ -426,10 +481,13 @@ async def main():
 
     await start_web()
 
-    # Create ONE persistent HTTP connection
-    # for Telegram Bot API.
+    # IMPORTANT:
+    # ClientSession comes from aiohttp,
+    # NOT aiohttp.web
     http_session = aiohttp.ClientSession(
-        timeout=aiohttp.ClientTimeout(total=15)
+        timeout=aiohttp.ClientTimeout(
+            total=15
+        )
     )
 
     print(
@@ -443,7 +501,7 @@ async def main():
 
         raise SystemExit(
             "❌ Session expired. "
-            "Generate a new SESSION_STRING."
+            "Generate a new session string."
         )
 
     print(
@@ -452,12 +510,13 @@ async def main():
     )
 
     print(
-        f"🎯 Source: {SOURCE_CHAT}",
+        f"🎯 Listening to {SOURCE_CHAT}",
         flush=True,
     )
 
     print(
-        "⚡ Filter: Alerts in this hour: 3 + Buys:",
+        "⚡ Filter: "
+        "Alerts in this hour: 3 + Buys:",
         flush=True,
     )
 
@@ -476,13 +535,8 @@ async def main():
 
     finally:
 
-        print(
-            "🛑 Shutting down...",
-            flush=True,
-        )
-
         if (
-            http_session is not None
+            http_session
             and not http_session.closed
         ):
 
@@ -501,7 +555,4 @@ if __name__ == "__main__":
 
     except KeyboardInterrupt:
 
-        print(
-            "🛑 Stopped",
-            flush=True,
-        )
+        pass
