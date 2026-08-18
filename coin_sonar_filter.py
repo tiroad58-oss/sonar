@@ -1,8 +1,8 @@
 import asyncio
 import time
 import re
-import aiohttp
-from aiohttp import web
+import os
+import datetime
 
 try:
     import uvloop
@@ -13,30 +13,21 @@ except Exception:
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.network import ConnectionTcpAbridged
-
+from telethon.errors import FloodWaitError
 
 # ================= CONFIG =================
-
-API_ID         = 28807546
-API_HASH       = "37624d57b1d83e6bb51b2db777658d0f"
-BOT_TOKEN      = "7913078821:AAH_jUTHXlFx66daqBkYY7mKw7UZnwpp_A0"
-CHAT_ID        = 1692583809
-SESSION_STRING = "1BJWap1wBuzx_OTCt3Xy_83N0Eej5M2__CbVLaXQzxovBXI..."
+# BEST PRACTICE: Set these in Railway's Environment Variables
+API_ID         = int(os.getenv("API_ID", "28807546"))
+API_HASH       = os.getenv("API_HASH", "37624d57b1d83e6bb51b2db777658d0f")
+BOT_TOKEN      = os.getenv("BOT_TOKEN", "7913078821:AAH_jUTHXlFx66daqBkYY7mKw7UZnwpp_A0")
+CHAT_ID        = int(os.getenv("CHAT_ID", "1692583809"))
+SESSION_STRING = os.getenv("SESSION_STRING", "1BJWap1wBuzx_OTCt3Xy_83N0Eej5M2__CbVLaXQzxovBXmIbsigVPf9zGOhGRecDxzzU046J-Dg91Oftjxs6vjKHKZqzj-dWrgWOOTvOPjaskIVttRunbZo36Glu4lFv3WDL11YBOZHvvKvJWWhMIT3xoI5icLC2XS6fmx-nvA7uBJoa7UVcyYsaYDVvrBgwqM0d08R0z6iLrbDfz1tP4CFukIafcWIMEyhE84jgXRtTRBkFPboXhL-zmpfkBdsSFDPuP2U5cu8y1BCd2XPiNmjZA2BDFcogTXHcD9BWPbznNLZ6My4SVh1rCp-G7beTbnZOa6KV0QSgRGRWIQKvvT3EQ7j0-9Q=")
 SOURCE_CHAT    = "CoinSonarV2"
-PORT           = 8080
-
 # ==========================================
 
-
-# ============================================================
-# TELEGRAM USER CLIENT
-# This listens to CoinSonarV2.
-# ============================================================
-
+# User Client (StringSession is perfect for Railway)
 client = TelegramClient(
-    StringSession(SESSION_STRING),
-    API_ID,
-    API_HASH,
+    StringSession(SESSION_STRING), API_ID, API_HASH,
     connection=ConnectionTcpAbridged,
     connection_retries=10,
     retry_delay=1,
@@ -46,513 +37,80 @@ client = TelegramClient(
     flood_sleep_threshold=0,
 )
 
-
-# Persistent HTTP session used to send the bot message
-http_session = None
-
-
-# ============================================================
-# FILTER
-# ============================================================
+# Bot Client (Use a named session to cache login state across restarts)
+bot = TelegramClient('bot_session', API_ID, API_HASH, connection=ConnectionTcpAbridged)
 
 def matches(text):
-    return (
-        "Alerts in this hour: 3" in text
-        and "Buys:" in text
-    )
-
+    return "Alerts in this hour: 3" in text and "Buys:" in text
 
 def format_alert(text):
     return text.strip()
 
-
-# ============================================================
-# SEND NOTIFICATION
-# Direct Telegram Bot API
-# ============================================================
-
-async def send_notification(text, coin="UNKNOWN", source_age=None):
-
-    global http_session
-
-    if http_session is None or http_session.closed:
-        http_session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=15)
-        )
-
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": text,
-        "disable_web_page_preview": True,
-    }
-
-    started = time.perf_counter()
-
+async def send_notification(text):
     try:
-
-        async with http_session.post(
-            url,
-            json=payload
-        ) as response:
-
-            body = await response.text()
-
-            elapsed = time.perf_counter() - started
-
-            if response.status == 200:
-
-                if source_age is not None:
-
-                    total_age = (
-                        time.time()
-                        - (
-                            time.time()
-                            - source_age
-                        )
-                    )
-
-                print(
-                    f"📤 SENT {coin} | "
-                    f"API={elapsed:.3f}s | "
-                    f"source_age={source_age:.3f}s",
-                    flush=True,
-                )
-
-                return True
-
-            # Telegram rate limit
-            if response.status == 429:
-
-                try:
-                    data = await response.json()
-
-                    retry_after = (
-                        data.get("parameters", {})
-                        .get("retry_after", 1)
-                    )
-
-                except Exception:
-
-                    retry_after = 1
-
-                print(
-                    f"⚠️ Telegram rate limit: "
-                    f"retrying in {retry_after}s",
-                    flush=True,
-                )
-
-                await asyncio.sleep(retry_after)
-
-                async with http_session.post(
-                    url,
-                    json=payload
-                ) as retry_response:
-
-                    retry_body = await retry_response.text()
-
-                    if retry_response.status == 200:
-
-                        print(
-                            f"📤 RETRY SENT {coin}",
-                            flush=True,
-                        )
-
-                        return True
-
-                    print(
-                        f"❌ Retry failed "
-                        f"HTTP {retry_response.status}: "
-                        f"{retry_body}",
-                        flush=True,
-                    )
-
-                    return False
-
-            print(
-                f"❌ Telegram API error "
-                f"HTTP {response.status}: {body}",
-                flush=True,
-            )
-
-            return False
-
-    except asyncio.TimeoutError:
-
-        print(
-            f"❌ Telegram API timeout for {coin}",
-            flush=True,
-        )
-
-        return False
-
+        # Telethon automatically handles reconnection on send_message
+        await bot.send_message(CHAT_ID, text, parse_mode=None)
+    except FloodWaitError as e:
+        print(f"⚠️ FloodWait: sleeping for {e.seconds}s", flush=True)
+        await asyncio.sleep(e.seconds)
+        try:
+            await bot.send_message(CHAT_ID, text, parse_mode=None)
+        except Exception as e2:
+            print(f"Send error after sleep: {e2}", flush=True)
     except Exception as e:
+        print(f"Send error: {e}", flush=True)
 
-        print(
-            f"❌ Send error for {coin}: {repr(e)}",
-            flush=True,
-        )
-
-        return False
-
-
-# ============================================================
-# PROCESS MESSAGE
-# ============================================================
-
-async def process(text, source_timestamp=None):
-
+async def process(text):
     if not text:
+        return
+    
+    # Use [A-Za-z0-9] to avoid matching underscores in tickers
+    coin_match = re.search(r'\$([A-Za-z0-9]+)', text)
+    coin = f"${coin_match.group(1)}" if coin_match else "UNKNOWN"
+    
+    if matches(text):
+        print(f"✅ MATCH {coin}", flush=True)
+        asyncio.create_task(send_notification(format_alert(text)))
+    else:
+        print(f"⏭️ SKIP {coin}", flush=True)
 
-        print(
-            "EMPTY TEXT",
-            flush=True,
-        )
-
+@client.on(events.NewMessage(chats=SOURCE_CHAT))
+async def new_message_handler(event):
+    # CRITICAL FIX: Ignore messages that are part of an album 
+    # to prevent duplicate processing (handled by Album event below)
+    if event.message.grouped_id:
         return
 
-    processing_started = time.perf_counter()
+    # CRITICAL FIX: Force UTC timezone to prevent server timezone offset bugs
+    msg_time = event.message.date.replace(tzinfo=datetime.timezone.utc)
+    age = max(0.0, time.time() - msg_time.timestamp())
+    print(f"⏱️ age={age:.1f}s", flush=True)
+    await process(event.message.message or "")
 
-    # Calculate actual age of CoinSonar message
-    source_age = None
-
-    if source_timestamp is not None:
-
-        source_age = max(
-            0.0,
-            time.time() - source_timestamp
-        )
-
-    # Find coin
-    coin_match = re.search(
-        r"\$(\w+)",
-        text
-    )
-
-    coin = (
-        f"${coin_match.group(1)}"
-        if coin_match
-        else "UNKNOWN"
-    )
-
-    print(
-        f"📨 RECEIVED {coin} | "
-        f"source_age="
-        f"{source_age:.3f}s"
-        if source_age is not None
-        else
-        f"📨 RECEIVED {coin}",
-        flush=True,
-    )
-
-    print(
-        f"RAW: {repr(text[:200])}",
-        flush=True,
-    )
-
-    # ========================================================
-    # FILTER
-    # ========================================================
-
-    if matches(text):
-
-        filter_elapsed = (
-            time.perf_counter()
-            - processing_started
-        )
-
-        print(
-            f"✅ MATCH {coin} | "
-            f"filter="
-            f"{filter_elapsed * 1000:.1f}ms",
-            flush=True,
-        )
-
-        # Send immediately
-        asyncio.create_task(
-            send_notification(
-                format_alert(text),
-                coin,
-                source_age
-            )
-        )
-
-    else:
-
-        print(
-            f"⏭️ SKIP {coin}",
-            flush=True,
-        )
-
-
-# ============================================================
-# NEW MESSAGE
-# ============================================================
-
-@client.on(
-    events.NewMessage(
-        chats=SOURCE_CHAT
-    )
-)
-async def new_message_handler(event):
-
-    try:
-
-        message = event.message
-
-        if not message:
-            return
-
-        message_timestamp = (
-            message.date.timestamp()
-            if message.date
-            else None
-        )
-
-        age = (
-            max(
-                0.0,
-                time.time()
-                - message_timestamp
-            )
-            if message_timestamp
-            else 0.0
-        )
-
-        print(
-            f"⏱ NEW MESSAGE AGE = "
-            f"{age:.3f}s",
-            flush=True,
-        )
-
-        await process(
-            message.message or "",
-            message_timestamp
-        )
-
-    except Exception as e:
-
-        print(
-            f"❌ New message handler error: "
-            f"{repr(e)}",
-            flush=True,
-        )
-
-
-# ============================================================
-# ALBUM
-# ============================================================
-
-@client.on(
-    events.Album(
-        chats=SOURCE_CHAT
-    )
-)
+@client.on(events.Album(chats=SOURCE_CHAT))
 async def album_handler(event):
-
-    try:
-
-        if not event.messages:
-            return
-
-        message = event.messages[0]
-
-        message_timestamp = (
-            message.date.timestamp()
-            if message.date
-            else None
-        )
-
-        age = (
-            max(
-                0.0,
-                time.time()
-                - message_timestamp
-            )
-            if message_timestamp
-            else 0.0
-        )
-
-        print(
-            f"⏱ ALBUM AGE = "
-            f"{age:.3f}s",
-            flush=True,
-        )
-
-        await process(
-            message.message or "",
-            message_timestamp
-        )
-
-    except Exception as e:
-
-        print(
-            f"❌ Album handler error: "
-            f"{repr(e)}",
-            flush=True,
-        )
-
-
-# ============================================================
-# CONNECTION PING
-# ============================================================
-
-async def ping_loop():
-
-    while True:
-
-        await asyncio.sleep(30)
-
-        try:
-
-            if not client.is_connected():
-
-                print(
-                    "⚠️ Telegram disconnected. "
-                    "Reconnecting...",
-                    flush=True,
-                )
-
-                await client.connect()
-
-            else:
-
-                await client.get_me()
-
-                print(
-                    "💓 Telegram connection OK",
-                    flush=True,
-                )
-
-        except Exception as e:
-
-            print(
-                f"❌ Ping error: {repr(e)}",
-                flush=True,
-            )
-
-
-# ============================================================
-# RAILWAY HEALTH SERVER
-# ============================================================
-
-async def health(request):
-
-    return web.Response(
-        text="ok"
-    )
-
-
-async def start_web():
-
-    app = web.Application()
-
-    app.router.add_get(
-        "/",
-        health
-    )
-
-    runner = web.AppRunner(app)
-
-    await runner.setup()
-
-    site = web.TCPSite(
-        runner,
-        "0.0.0.0",
-        PORT
-    )
-
-    await site.start()
-
-    print(
-        f"🌐 HTTP keepalive on port {PORT}",
-        flush=True,
-    )
-
-
-# ============================================================
-# MAIN
-# ============================================================
+    if not event.messages:
+        return
+    
+    msg_time = event.messages[0].date.replace(tzinfo=datetime.timezone.utc)
+    age = max(0.0, time.time() - msg_time.timestamp())
+    print(f"⏱️ album age={age:.1f}s", flush=True)
+    await process(event.messages[0].message or "")
 
 async def main():
-
-    global http_session
-
-    await start_web()
-
-    # IMPORTANT:
-    # ClientSession comes from aiohttp,
-    # NOT aiohttp.web
-    http_session = aiohttp.ClientSession(
-        timeout=aiohttp.ClientTimeout(
-            total=15
-        )
-    )
-
-    print(
-        "🔌 Connecting to Telegram...",
-        flush=True,
-    )
-
+    await bot.start(bot_token=BOT_TOKEN)
     await client.connect()
-
     if not await client.is_user_authorized():
-
-        raise SystemExit(
-            "❌ Session expired. "
-            "Generate a new session string."
-        )
-
-    print(
-        "✅ Telegram user account connected",
-        flush=True,
-    )
-
-    print(
-        f"🎯 Listening to {SOURCE_CHAT}",
-        flush=True,
-    )
-
-    print(
-        "⚡ Filter: "
-        "Alerts in this hour: 3 + Buys:",
-        flush=True,
-    )
-
-    print(
-        "🚀 REAL-TIME LISTENER ACTIVE",
-        flush=True,
-    )
-
-    asyncio.create_task(
-        ping_loop()
-    )
-
-    try:
-
-        await client.run_until_disconnected()
-
-    finally:
-
-        if (
-            http_session
-            and not http_session.closed
-        ):
-
-            await http_session.close()
-
-
-# ============================================================
-# START
-# ============================================================
+        raise SystemExit("Session expired. Generate a new session string.")
+    
+    # REMOVED: ping_loop. Telethon handles keep-alives automatically. 
+    # Calling get_me() every 20s will trigger FloodWait errors.
+    
+    print("✅ Listening to CoinSonarV2 | filter: Alerts in this hour: 3", flush=True)
+    await client.run_until_disconnected()
 
 if __name__ == "__main__":
-
     try:
-
         asyncio.run(main())
-
     except KeyboardInterrupt:
-
         pass
