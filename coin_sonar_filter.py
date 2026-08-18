@@ -1,6 +1,7 @@
 import asyncio
 import time
 import aiohttp
+import logging
 
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
@@ -23,9 +24,23 @@ CHAT_ID = 1692583809
 
 SOURCE_USERNAME = "@CoinSonarV2"
 
+# Fallback polling interval.
+# 2 seconds is fast without hammering Telegram.
+POLL_INTERVAL = 2.0
+
 
 # ============================================================
-# TELEGRAM USER CLIENT
+# LOGGING
+# ============================================================
+
+logging.basicConfig(
+    level=logging.WARNING,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+)
+
+
+# ============================================================
+# TELEGRAM CLIENT
 # ============================================================
 
 client = TelegramClient(
@@ -42,8 +57,19 @@ client = TelegramClient(
 )
 
 
+# ============================================================
+# GLOBALS
+# ============================================================
+
 http_session = None
+source_entity = None
 source_chat_id = None
+
+# Last message we processed.
+last_processed_id = None
+
+# Prevent event + polling from processing the same message twice.
+processing_ids = set()
 
 
 # ============================================================
@@ -57,151 +83,52 @@ def should_notify(text):
 
     lines = text.splitlines()
 
-    print(
-        f"📏 MESSAGE HAS {len(lines)} LINES",
-        flush=True
-    )
-
     if len(lines) < 7:
         return False
-
-    # Python indexes from zero:
-    #
-    # lines[0] = line 1
-    # lines[1] = line 2
-    # lines[2] = line 3
-    # lines[3] = line 4
-    # lines[4] = line 5
-    # lines[5] = line 6
-    # lines[6] = line 7
 
     line_5 = lines[4].strip()
     line_7 = lines[6].strip()
 
-    print(
-        f"LINE 5: {line_5}",
-        flush=True
+    condition_buys = (
+        "buys" in line_5.lower()
     )
 
-    print(
-        f"LINE 7: {line_7}",
-        flush=True
-    )
-
-    condition_1 = "buys" in line_5.lower()
-
-    condition_2 = (
+    condition_alert = (
         "alerts in this hour: 3"
         in line_7.lower()
     )
 
     print(
-        f"CHECK LINE 5 BUYS: {condition_1}",
+        f"LINE 5 = {line_5}",
         flush=True
     )
 
     print(
-        f"CHECK LINE 7 ALERTS: {condition_2}",
+        f"LINE 7 = {line_7}",
         flush=True
     )
 
-    return condition_1 and condition_2
+    print(
+        f"BUYS MATCH = {condition_buys}",
+        flush=True
+    )
+
+    print(
+        f"ALERT MATCH = {condition_alert}",
+        flush=True
+    )
+
+    return (
+        condition_buys
+        and condition_alert
+    )
 
 
 # ============================================================
-# SEND TELEGRAM BOT MESSAGE
+# SEND TEXT TO YOUR BOT
 # ============================================================
 
-async def send_notification(
-    text,
-    source_age,
-    image_path=None
-):
-
-    global http_session
-
-    # --------------------------------------------------------
-    # If there is an image, send photo + caption
-    # --------------------------------------------------------
-
-    if image_path:
-
-        url = (
-            f"https://api.telegram.org/"
-            f"bot{BOT_TOKEN}/sendPhoto"
-        )
-
-        try:
-
-            started = time.perf_counter()
-
-            data = aiohttp.FormData()
-
-            data.add_field(
-                "chat_id",
-                str(CHAT_ID)
-            )
-
-            data.add_field(
-                "caption",
-                text
-            )
-
-            with open(
-                image_path,
-                "rb"
-            ) as photo_file:
-
-                data.add_field(
-                    "photo",
-                    photo_file,
-                    filename="coinsonar.jpg",
-                    content_type="image/jpeg"
-                )
-
-                async with http_session.post(
-                    url,
-                    data=data
-                ) as response:
-
-                    body = await response.text()
-
-            elapsed = (
-                time.perf_counter()
-                - started
-            )
-
-            if response.status == 200:
-
-                print(
-                    f"📤 PHOTO + TEXT SENT | "
-                    f"API={elapsed:.3f}s | "
-                    f"SOURCE AGE={source_age:.3f}s",
-                    flush=True
-                )
-
-                return True
-
-            print(
-                f"❌ BOT PHOTO ERROR "
-                f"{response.status}: {body}",
-                flush=True
-            )
-
-            return False
-
-        except Exception as e:
-
-            print(
-                f"❌ PHOTO SEND ERROR: {repr(e)}",
-                flush=True
-            )
-
-            return False
-
-    # --------------------------------------------------------
-    # Text only
-    # --------------------------------------------------------
+async def send_text(text, source_age):
 
     url = (
         f"https://api.telegram.org/"
@@ -233,9 +160,24 @@ async def send_notification(
             if response.status == 200:
 
                 print(
-                    f"📤 TEXT SENT | "
-                    f"API={elapsed:.3f}s | "
-                    f"SOURCE AGE={source_age:.3f}s",
+                    "",
+                    flush=True
+                )
+
+                print(
+                    "📤 NOTIFICATION SENT",
+                    flush=True
+                )
+
+                print(
+                    f"⚡ BOT API: "
+                    f"{elapsed:.3f}s",
+                    flush=True
+                )
+
+                print(
+                    f"⏱ SOURCE AGE: "
+                    f"{source_age:.3f}s",
                     flush=True
                 )
 
@@ -252,7 +194,8 @@ async def send_notification(
     except Exception as e:
 
         print(
-            f"❌ TEXT SEND ERROR: {repr(e)}",
+            f"❌ BOT SEND ERROR: "
+            f"{repr(e)}",
             flush=True
         )
 
@@ -260,74 +203,57 @@ async def send_notification(
 
 
 # ============================================================
-# MAIN MESSAGE HANDLER
-#
-# IMPORTANT:
-# We listen to ALL new messages here.
-# Then we check source_chat_id ourselves.
-#
-# This is more reliable than:
-# events.NewMessage(chats="@CoinSonarV2")
-#
-# It also handles photo + caption messages.
+# PROCESS MESSAGE
 # ============================================================
 
-@client.on(events.NewMessage())
-async def message_handler(event):
+async def process_message(message, method):
+
+    global last_processed_id
+
+    if not message:
+        return
+
+    message_id = message.id
+
+    # --------------------------------------------------------
+    # DUPLICATE PROTECTION
+    # --------------------------------------------------------
+
+    if message_id in processing_ids:
+        return
+
+    if (
+        last_processed_id is not None
+        and message_id <= last_processed_id
+    ):
+        return
+
+    processing_ids.add(message_id)
 
     try:
 
         # ----------------------------------------------------
-        # Ignore everything that isn't CoinSonarV2
+        # Update last seen message
         # ----------------------------------------------------
 
-        if event.chat_id != source_chat_id:
-            return
-
-        received_at = time.time()
-
-        message = event.message
-
-        if not message:
-            return
+        if (
+            last_processed_id is None
+            or message_id > last_processed_id
+        ):
+            last_processed_id = message_id
 
         # ----------------------------------------------------
-        # THIS IS THE IMPORTANT PART
+        # TEXT / CAPTION
         #
-        # For a photo message, the text underneath the photo
-        # is stored here as the message caption.
+        # For a photo message, Telegram puts the caption here.
         # ----------------------------------------------------
 
         text = message.message or ""
 
-        print(
-            "",
-            flush=True
-        )
+        if not text:
+            return
 
-        print(
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            flush=True
-        )
-
-        print(
-            "📨 COINSONAR MESSAGE RECEIVED!",
-            flush=True
-        )
-
-        print(
-            f"🆔 CHAT ID: {event.chat_id}",
-            flush=True
-        )
-
-        print(
-            f"🖼 HAS MEDIA: {bool(message.media)}",
-            flush=True
-        )
-
-        # ----------------------------------------------------
-        # SOURCE AGE
-        # ----------------------------------------------------
+        received_at = time.time()
 
         if message.date:
 
@@ -341,32 +267,47 @@ async def message_handler(event):
 
             source_age = 0.0
 
+        # ----------------------------------------------------
+        # LOG
+        # ----------------------------------------------------
+
         print(
-            f"⏱ SOURCE AGE: "
-            f"{source_age:.3f}s",
+            "",
             flush=True
         )
 
-        # ----------------------------------------------------
-        # CHECK CAPTION
-        # ----------------------------------------------------
-
-        if not text:
-
-            print(
-                "⚠️ MESSAGE HAS NO TEXT/CAPTION",
-                flush=True
-            )
-
-            print(
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-                flush=True
-            )
-
-            return
+        print(
+            "========================================",
+            flush=True
+        )
 
         print(
-            "📝 CAPTION RECEIVED:",
+            "📨 COINSONAR MESSAGE FOUND",
+            flush=True
+        )
+
+        print(
+            f"METHOD: {method}",
+            flush=True
+        )
+
+        print(
+            f"MESSAGE ID: {message_id}",
+            flush=True
+        )
+
+        print(
+            f"SOURCE AGE: {source_age:.3f}s",
+            flush=True
+        )
+
+        print(
+            f"HAS MEDIA: {bool(message.media)}",
+            flush=True
+        )
+
+        print(
+            "CAPTION/TEXT:",
             flush=True
         )
 
@@ -375,32 +316,28 @@ async def message_handler(event):
             flush=True
         )
 
+        print(
+            "========================================",
+            flush=True
+        )
+
         # ----------------------------------------------------
         # FILTER
         # ----------------------------------------------------
 
-        filter_started = time.perf_counter()
+        started = time.perf_counter()
 
         matched = should_notify(text)
 
-        filter_elapsed = (
+        filter_time = (
             time.perf_counter()
-            - filter_started
+            - started
         )
-
-        # ----------------------------------------------------
-        # NO MATCH
-        # ----------------------------------------------------
 
         if not matched:
 
             print(
                 "⏭️ NO MATCH",
-                flush=True
-            )
-
-            print(
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
                 flush=True
             )
 
@@ -411,50 +348,133 @@ async def message_handler(event):
         # ----------------------------------------------------
 
         print(
-            "🚨 MATCH!",
+            "",
             flush=True
         )
 
         print(
-            f"⚡ FILTER TIME: "
-            f"{filter_elapsed * 1000:.3f}ms",
+            "🚨🚨🚨 MATCH FOUND 🚨🚨🚨",
+            flush=True
+        )
+
+        print(
+            f"FILTER TIME: "
+            f"{filter_time * 1000:.3f}ms",
             flush=True
         )
 
         # ----------------------------------------------------
-        # IMPORTANT:
-        #
-        # First test with TEXT ONLY.
-        #
-        # Once this works, we can add forwarding of the image.
-        #
-        # This keeps the first test as fast and simple as
-        # possible.
+        # SEND IMMEDIATELY
         # ----------------------------------------------------
 
         asyncio.create_task(
-            send_notification(
+            send_text(
                 text,
                 source_age
             )
         )
 
+    finally:
+
+        processing_ids.discard(message_id)
+
+
+# ============================================================
+# EVENT LISTENER
+# ============================================================
+
+@client.on(events.NewMessage())
+async def event_handler(event):
+
+    try:
+
+        if source_chat_id is None:
+            return
+
+        if event.chat_id != source_chat_id:
+            return
+
         print(
-            "🚀 NOTIFICATION TASK CREATED",
+            "⚡ EVENT RECEIVED",
             flush=True
         )
 
-        print(
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            flush=True
+        await process_message(
+            event.message,
+            "EVENT"
         )
 
     except Exception as e:
 
         print(
-            f"❌ MESSAGE HANDLER ERROR: "
-            f"{repr(e)}",
+            f"❌ EVENT ERROR: {repr(e)}",
             flush=True
+        )
+
+
+# ============================================================
+# POLLING FALLBACK
+# ============================================================
+
+async def polling_loop():
+
+    global last_processed_id
+
+    print(
+        f"🔄 FALLBACK POLLING ACTIVE "
+        f"EVERY {POLL_INTERVAL}s",
+        flush=True
+    )
+
+    while True:
+
+        try:
+
+            # Get the newest message from CoinSonar.
+            messages = await client.get_messages(
+                source_entity,
+                limit=1
+            )
+
+            if messages:
+
+                newest = messages[0]
+
+                # First startup:
+                #
+                # We establish the current ID but don't
+                # send an old message.
+                if last_processed_id is None:
+
+                    last_processed_id = newest.id
+
+                    print(
+                        f"📌 Starting from message ID "
+                        f"{last_processed_id}",
+                        flush=True
+                    )
+
+                elif newest.id > last_processed_id:
+
+                    print(
+                        "🔄 POLLING FOUND NEW MESSAGE",
+                        flush=True
+                    )
+
+                    await process_message(
+                        newest,
+                        "POLL"
+                    )
+
+        except Exception as e:
+
+            print(
+                f"❌ POLLING ERROR: {repr(e)}",
+                flush=True
+            )
+
+        await asyncio.sleep(
+            POLL_INTERVAL
         )
 
 
@@ -502,10 +522,11 @@ async def connection_monitor():
 async def main():
 
     global http_session
+    global source_entity
     global source_chat_id
 
     # --------------------------------------------------------
-    # HTTP SESSION
+    # HTTP
     # --------------------------------------------------------
 
     http_session = aiohttp.ClientSession(
@@ -517,7 +538,7 @@ async def main():
     try:
 
         # ----------------------------------------------------
-        # CONNECT
+        # TELEGRAM
         # ----------------------------------------------------
 
         print(
@@ -539,7 +560,7 @@ async def main():
         )
 
         # ----------------------------------------------------
-        # RESOLVE COINSONAR
+        # RESOLVE SOURCE
         # ----------------------------------------------------
 
         print(
@@ -552,12 +573,10 @@ async def main():
             SOURCE_USERNAME
         )
 
-        source_chat_id = (
-            source_entity.id
-        )
+        source_chat_id = source_entity.id
 
         print(
-            "✅ COINSONAR RESOLVED",
+            "✅ SOURCE RESOLVED",
             flush=True
         )
 
@@ -568,7 +587,7 @@ async def main():
         )
 
         print(
-            f"   Telegram ID: "
+            f"   ID: "
             f"{source_chat_id}",
             flush=True
         )
@@ -580,7 +599,45 @@ async def main():
         )
 
         # ----------------------------------------------------
-        # FILTER INFO
+        # IMPORTANT STARTUP CHECK
+        # ----------------------------------------------------
+
+        latest = await client.get_messages(
+            source_entity,
+            limit=1
+        )
+
+        if latest:
+
+            print(
+                f"📌 LATEST SOURCE MESSAGE ID: "
+                f"{latest[0].id}",
+                flush=True
+            )
+
+            print(
+                f"📌 LATEST MESSAGE DATE: "
+                f"{latest[0].date}",
+                flush=True
+            )
+
+            print(
+                f"📌 LATEST HAS MEDIA: "
+                f"{bool(latest[0].media)}",
+                flush=True
+            )
+
+            last_processed_id = latest[0].id
+
+        else:
+
+            print(
+                "⚠️ SOURCE HAS NO MESSAGES",
+                flush=True
+            )
+
+        # ----------------------------------------------------
+        # READY
         # ----------------------------------------------------
 
         print(
@@ -589,7 +646,13 @@ async def main():
         )
 
         print(
-            "🎯 FILTER:",
+            "🎯 SOURCE:",
+            SOURCE_USERNAME,
+            flush=True
+        )
+
+        print(
+            "🎯 RULE:",
             flush=True
         )
 
@@ -605,7 +668,7 @@ async def main():
         )
 
         print(
-            "   PHOTO + CAPTION SUPPORTED",
+            "🎯 PHOTO + CAPTION SUPPORTED",
             flush=True
         )
 
@@ -615,20 +678,24 @@ async def main():
         )
 
         print(
-            "🚀 REAL-TIME LISTENER ACTIVE",
+            "🚀 LISTENER ACTIVE",
             flush=True
         )
 
         # ----------------------------------------------------
-        # MONITOR
+        # START FALLBACK
         # ----------------------------------------------------
+
+        asyncio.create_task(
+            polling_loop()
+        )
 
         asyncio.create_task(
             connection_monitor()
         )
 
         # ----------------------------------------------------
-        # RUN FOREVER
+        # RUN
         # ----------------------------------------------------
 
         await client.run_until_disconnected()
