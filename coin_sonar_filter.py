@@ -21,8 +21,7 @@ SESSION_STRING = "1BJWap1wBu7zXC1n0i_ZEYU8tlQb7YatgCqbcBfVF_nsWzkeMZc0QHAq2OJhzj
 BOT_TOKEN = "8833328238:AAHD-03Tz7r2kCYxmHn4k62IGwafuv3tyjk"
 CHAT_ID = 1692583809
 
-# CoinSonarV2 source
-SOURCE_CHAT = "@CoinSonarV2"
+SOURCE_USERNAME = "@CoinSonarV2"
 
 
 # ============================================================
@@ -33,25 +32,18 @@ client = TelegramClient(
     StringSession(SESSION_STRING),
     API_ID,
     API_HASH,
-
     connection=ConnectionTcpAbridged,
-
     connection_retries=10,
     retry_delay=1,
-
     auto_reconnect=True,
-
-    # Do not process old messages after startup
     catch_up=False,
-
     receive_updates=True,
-
     flood_sleep_threshold=0,
 )
 
 
-# Persistent HTTP session
 http_session = None
+source_chat_id = None
 
 
 # ============================================================
@@ -60,38 +52,156 @@ http_session = None
 
 def should_notify(text):
 
+    if not text:
+        return False
+
     lines = text.splitlines()
 
-    # We require exactly the structure we expect:
-    #
-    # line 1
-    # line 2
-    # line 3
-    # line 4
-    # line 5 = Buys
-    # line 6
-    # line 7 = Alerts in this hour: 3
+    print(
+        f"📏 MESSAGE HAS {len(lines)} LINES",
+        flush=True
+    )
 
     if len(lines) < 7:
         return False
 
+    # Python indexes from zero:
+    #
+    # lines[0] = line 1
+    # lines[1] = line 2
+    # lines[2] = line 3
+    # lines[3] = line 4
+    # lines[4] = line 5
+    # lines[5] = line 6
+    # lines[6] = line 7
+
     line_5 = lines[4].strip()
     line_7 = lines[6].strip()
 
-    return (
-        "Buys" in line_5
-        and
-        "Alerts in this hour: 3" in line_7
+    print(
+        f"LINE 5: {line_5}",
+        flush=True
     )
 
+    print(
+        f"LINE 7: {line_7}",
+        flush=True
+    )
+
+    condition_1 = "buys" in line_5.lower()
+
+    condition_2 = (
+        "alerts in this hour: 3"
+        in line_7.lower()
+    )
+
+    print(
+        f"CHECK LINE 5 BUYS: {condition_1}",
+        flush=True
+    )
+
+    print(
+        f"CHECK LINE 7 ALERTS: {condition_2}",
+        flush=True
+    )
+
+    return condition_1 and condition_2
+
 
 # ============================================================
-# SEND BOT MESSAGE
+# SEND TELEGRAM BOT MESSAGE
 # ============================================================
 
-async def send_notification(text, source_age):
+async def send_notification(
+    text,
+    source_age,
+    image_path=None
+):
 
     global http_session
+
+    # --------------------------------------------------------
+    # If there is an image, send photo + caption
+    # --------------------------------------------------------
+
+    if image_path:
+
+        url = (
+            f"https://api.telegram.org/"
+            f"bot{BOT_TOKEN}/sendPhoto"
+        )
+
+        try:
+
+            started = time.perf_counter()
+
+            data = aiohttp.FormData()
+
+            data.add_field(
+                "chat_id",
+                str(CHAT_ID)
+            )
+
+            data.add_field(
+                "caption",
+                text
+            )
+
+            with open(
+                image_path,
+                "rb"
+            ) as photo_file:
+
+                data.add_field(
+                    "photo",
+                    photo_file,
+                    filename="coinsonar.jpg",
+                    content_type="image/jpeg"
+                )
+
+                async with http_session.post(
+                    url,
+                    data=data
+                ) as response:
+
+                    body = await response.text()
+
+            elapsed = (
+                time.perf_counter()
+                - started
+            )
+
+            if response.status == 200:
+
+                print(
+                    f"📤 PHOTO + TEXT SENT | "
+                    f"API={elapsed:.3f}s | "
+                    f"SOURCE AGE={source_age:.3f}s",
+                    flush=True
+                )
+
+                return True
+
+            print(
+                f"❌ BOT PHOTO ERROR "
+                f"{response.status}: {body}",
+                flush=True
+            )
+
+            return False
+
+        except Exception as e:
+
+            print(
+                f"❌ PHOTO SEND ERROR: {repr(e)}",
+                flush=True
+            )
+
+            return False
+
+    # --------------------------------------------------------
+    # Text only
+    # --------------------------------------------------------
 
     url = (
         f"https://api.telegram.org/"
@@ -123,10 +233,10 @@ async def send_notification(text, source_age):
             if response.status == 200:
 
                 print(
-                    f"📤 NOTIFICATION SENT | "
+                    f"📤 TEXT SENT | "
                     f"API={elapsed:.3f}s | "
                     f"SOURCE AGE={source_age:.3f}s",
-                    flush=True,
+                    flush=True
                 )
 
                 return True
@@ -134,7 +244,7 @@ async def send_notification(text, source_age):
             print(
                 f"❌ BOT API ERROR "
                 f"{response.status}: {body}",
-                flush=True,
+                flush=True
             )
 
             return False
@@ -142,162 +252,210 @@ async def send_notification(text, source_age):
     except Exception as e:
 
         print(
-            f"❌ SEND ERROR: {repr(e)}",
-            flush=True,
+            f"❌ TEXT SEND ERROR: {repr(e)}",
+            flush=True
         )
 
         return False
 
 
 # ============================================================
-# MESSAGE HANDLER
+# MAIN MESSAGE HANDLER
+#
+# IMPORTANT:
+# We listen to ALL new messages here.
+# Then we check source_chat_id ourselves.
+#
+# This is more reliable than:
+# events.NewMessage(chats="@CoinSonarV2")
+#
+# It also handles photo + caption messages.
 # ============================================================
 
-@client.on(
-    events.NewMessage(
-        chats=SOURCE_CHAT
-    )
-)
+@client.on(events.NewMessage())
 async def message_handler(event):
 
-    received_at = time.time()
+    try:
 
-    message = event.message
+        # ----------------------------------------------------
+        # Ignore everything that isn't CoinSonarV2
+        # ----------------------------------------------------
 
-    if not message:
-        return
+        if event.chat_id != source_chat_id:
+            return
 
-    text = message.message or ""
+        received_at = time.time()
 
-    if not text:
-        return
+        message = event.message
 
-    # --------------------------------------------------------
-    # MEASURE MESSAGE AGE
-    # --------------------------------------------------------
+        if not message:
+            return
 
-    if message.date:
+        # ----------------------------------------------------
+        # THIS IS THE IMPORTANT PART
+        #
+        # For a photo message, the text underneath the photo
+        # is stored here as the message caption.
+        # ----------------------------------------------------
 
-        source_age = max(
-            0.0,
-            received_at - message.date.timestamp()
-        )
-
-    else:
-
-        source_age = 0.0
-
-    # --------------------------------------------------------
-    # LOG
-    # --------------------------------------------------------
-
-    print(
-        "",
-        flush=True,
-    )
-
-    print(
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        flush=True,
-    )
-
-    print(
-        "📨 COINSONAR MESSAGE RECEIVED",
-        flush=True,
-    )
-
-    print(
-        f"⏱ SOURCE AGE: {source_age:.3f}s",
-        flush=True,
-    )
-
-    # --------------------------------------------------------
-    # SHOW LINES 5 AND 7
-    # --------------------------------------------------------
-
-    lines = text.splitlines()
-
-    print(
-        f"📏 TOTAL LINES: {len(lines)}",
-        flush=True,
-    )
-
-    if len(lines) >= 5:
+        text = message.message or ""
 
         print(
-            f"LINE 5: {lines[4]}",
-            flush=True,
-        )
-
-    if len(lines) >= 7:
-
-        print(
-            f"LINE 7: {lines[6]}",
-            flush=True,
-        )
-
-    # --------------------------------------------------------
-    # FILTER
-    # --------------------------------------------------------
-
-    filter_started = time.perf_counter()
-
-    matched = should_notify(text)
-
-    filter_elapsed = (
-        time.perf_counter()
-        - filter_started
-    )
-
-    if not matched:
-
-        print(
-            "⏭️ NO MATCH",
-            flush=True,
+            "",
+            flush=True
         )
 
         print(
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            flush=True,
+            flush=True
         )
 
-        return
+        print(
+            "📨 COINSONAR MESSAGE RECEIVED!",
+            flush=True
+        )
 
-    # --------------------------------------------------------
-    # MATCH
-    # --------------------------------------------------------
+        print(
+            f"🆔 CHAT ID: {event.chat_id}",
+            flush=True
+        )
 
-    print(
-        "✅ MATCH!",
-        flush=True,
-    )
+        print(
+            f"🖼 HAS MEDIA: {bool(message.media)}",
+            flush=True
+        )
 
-    print(
-        f"⚡ FILTER: "
-        f"{filter_elapsed * 1000:.3f}ms",
-        flush=True,
-    )
+        # ----------------------------------------------------
+        # SOURCE AGE
+        # ----------------------------------------------------
 
-    # --------------------------------------------------------
-    # SEND IMMEDIATELY
-    # --------------------------------------------------------
+        if message.date:
 
-    asyncio.create_task(
-        send_notification(
+            source_age = max(
+                0.0,
+                received_at
+                - message.date.timestamp()
+            )
+
+        else:
+
+            source_age = 0.0
+
+        print(
+            f"⏱ SOURCE AGE: "
+            f"{source_age:.3f}s",
+            flush=True
+        )
+
+        # ----------------------------------------------------
+        # CHECK CAPTION
+        # ----------------------------------------------------
+
+        if not text:
+
+            print(
+                "⚠️ MESSAGE HAS NO TEXT/CAPTION",
+                flush=True
+            )
+
+            print(
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                flush=True
+            )
+
+            return
+
+        print(
+            "📝 CAPTION RECEIVED:",
+            flush=True
+        )
+
+        print(
             text,
-            source_age
+            flush=True
         )
-    )
 
-    print(
-        "🚀 SEND TASK CREATED",
-        flush=True,
-    )
+        # ----------------------------------------------------
+        # FILTER
+        # ----------------------------------------------------
 
-    print(
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        flush=True,
-    )
+        filter_started = time.perf_counter()
+
+        matched = should_notify(text)
+
+        filter_elapsed = (
+            time.perf_counter()
+            - filter_started
+        )
+
+        # ----------------------------------------------------
+        # NO MATCH
+        # ----------------------------------------------------
+
+        if not matched:
+
+            print(
+                "⏭️ NO MATCH",
+                flush=True
+            )
+
+            print(
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                flush=True
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # MATCH
+        # ----------------------------------------------------
+
+        print(
+            "🚨 MATCH!",
+            flush=True
+        )
+
+        print(
+            f"⚡ FILTER TIME: "
+            f"{filter_elapsed * 1000:.3f}ms",
+            flush=True
+        )
+
+        # ----------------------------------------------------
+        # IMPORTANT:
+        #
+        # First test with TEXT ONLY.
+        #
+        # Once this works, we can add forwarding of the image.
+        #
+        # This keeps the first test as fast and simple as
+        # possible.
+        # ----------------------------------------------------
+
+        asyncio.create_task(
+            send_notification(
+                text,
+                source_age
+            )
+        )
+
+        print(
+            "🚀 NOTIFICATION TASK CREATED",
+            flush=True
+        )
+
+        print(
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            flush=True
+        )
+
+    except Exception as e:
+
+        print(
+            f"❌ MESSAGE HANDLER ERROR: "
+            f"{repr(e)}",
+            flush=True
+        )
 
 
 # ============================================================
@@ -316,14 +474,14 @@ async def connection_monitor():
 
                 print(
                     "💓 Telegram connection OK",
-                    flush=True,
+                    flush=True
                 )
 
             else:
 
                 print(
                     "⚠️ Telegram disconnected",
-                    flush=True,
+                    flush=True
                 )
 
                 await client.connect()
@@ -331,8 +489,9 @@ async def connection_monitor():
         except Exception as e:
 
             print(
-                f"❌ CONNECTION ERROR: {repr(e)}",
-                flush=True,
+                f"❌ CONNECTION ERROR: "
+                f"{repr(e)}",
+                flush=True
             )
 
 
@@ -343,9 +502,10 @@ async def connection_monitor():
 async def main():
 
     global http_session
+    global source_chat_id
 
     # --------------------------------------------------------
-    # CREATE ONE PERSISTENT HTTP SESSION
+    # HTTP SESSION
     # --------------------------------------------------------
 
     http_session = aiohttp.ClientSession(
@@ -362,14 +522,10 @@ async def main():
 
         print(
             "🔌 Connecting to Telegram...",
-            flush=True,
+            flush=True
         )
 
         await client.connect()
-
-        # ----------------------------------------------------
-        # AUTH CHECK
-        # ----------------------------------------------------
 
         if not await client.is_user_authorized():
 
@@ -379,64 +535,92 @@ async def main():
 
         print(
             "✅ Telegram connected",
-            flush=True,
+            flush=True
         )
 
         # ----------------------------------------------------
-        # SOURCE
+        # RESOLVE COINSONAR
+        # ----------------------------------------------------
+
+        print(
+            f"🔎 Resolving "
+            f"{SOURCE_USERNAME}...",
+            flush=True
+        )
+
+        source_entity = await client.get_entity(
+            SOURCE_USERNAME
+        )
+
+        source_chat_id = (
+            source_entity.id
+        )
+
+        print(
+            "✅ COINSONAR RESOLVED",
+            flush=True
+        )
+
+        print(
+            f"   Username: "
+            f"{SOURCE_USERNAME}",
+            flush=True
+        )
+
+        print(
+            f"   Telegram ID: "
+            f"{source_chat_id}",
+            flush=True
+        )
+
+        print(
+            f"   Type: "
+            f"{type(source_entity).__name__}",
+            flush=True
+        )
+
+        # ----------------------------------------------------
+        # FILTER INFO
         # ----------------------------------------------------
 
         print(
             "",
-            flush=True,
-        )
-
-        print(
-            f"🎯 Listening to: {SOURCE_CHAT}",
-            flush=True,
-        )
-
-        # ----------------------------------------------------
-        # FILTER
-        # ----------------------------------------------------
-
-        print(
-            "",
-            flush=True,
+            flush=True
         )
 
         print(
             "🎯 FILTER:",
-            flush=True,
+            flush=True
         )
 
         print(
             '   LINE 5 contains "Buys"',
-            flush=True,
+            flush=True
         )
 
         print(
             '   LINE 7 contains '
             '"Alerts in this hour: 3"',
-            flush=True,
+            flush=True
         )
 
-        # ----------------------------------------------------
-        # READY
-        # ----------------------------------------------------
+        print(
+            "   PHOTO + CAPTION SUPPORTED",
+            flush=True
+        )
 
         print(
             "",
-            flush=True,
+            flush=True
         )
 
         print(
             "🚀 REAL-TIME LISTENER ACTIVE",
-            flush=True,
+            flush=True
         )
 
         # ----------------------------------------------------
-        # CONNECTION MONITOR
+        # MONITOR
         # ----------------------------------------------------
 
         asyncio.create_task(
@@ -444,14 +628,14 @@ async def main():
         )
 
         # ----------------------------------------------------
-        # WAIT FOR TELEGRAM EVENTS
+        # RUN FOREVER
         # ----------------------------------------------------
 
         await client.run_until_disconnected()
 
     finally:
 
-        if http_session is not None:
+        if http_session:
 
             await http_session.close()
 
@@ -474,5 +658,5 @@ if __name__ == "__main__":
 
         print(
             "🛑 Stopped",
-            flush=True,
+            flush=True
         )
