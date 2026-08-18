@@ -34,8 +34,7 @@ client = TelegramClient(
     receive_updates=True,
     flood_sleep_threshold=0,
 )
-bot = TelegramClient(StringSession(""), API_ID, API_HASH,
-    connection=ConnectionTcpAbridged)
+http_session = None
 
 def matches(text):
     return "Alerts in this hour: 3" in text and "Buys:" in text
@@ -44,17 +43,43 @@ def format_alert(text):
     return text.strip()
 
 async def send_notification(text):
+    global http_session
+
+    if http_session is None or http_session.closed:
+        http_session = web.ClientSession(
+            timeout=web.ClientTimeout(total=15)
+        )
+
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": text,
+        "disable_web_page_preview": True,
+    }
+
+    started = time.perf_counter()
     try:
-        if not bot.is_connected():
-            await bot.connect()
-        await bot.send_message(CHAT_ID, text, parse_mode=None)
-    except FloodWaitError as e:
-        await asyncio.sleep(e.seconds)
-        await bot.send_message(CHAT_ID, text, parse_mode=None)
+        async with http_session.post(url, json=payload) as response:
+            body = await response.text()
+            elapsed = time.perf_counter() - started
+
+            if response.status != 200:
+                print(
+                    f"❌ Telegram API error HTTP {response.status}: {body}",
+                    flush=True,
+                )
+                return
+
+            print(
+                f"📤 SENT to bot in {elapsed:.3f}s",
+                flush=True,
+            )
     except Exception as e:
-        print("Send error:", e, flush=True)
+        print(f"❌ Send error: {e}", flush=True)
 
 async def process(text):
+    received_at = time.perf_counter()
+
     if not text:
         print("EMPTY TEXT", flush=True)
         return
@@ -64,6 +89,10 @@ async def process(text):
     if matches(text):
         print(f"MATCH {coin}", flush=True)
         asyncio.create_task(send_notification(format_alert(text)))
+        print(
+            f"⚡ FILTERED {coin} in {(time.perf_counter() - received_at) * 1000:.1f}ms",
+            flush=True,
+        )
     else:
         print(f"SKIP {coin}", flush=True)
 
@@ -103,14 +132,29 @@ async def start_web():
     print(f"🌐 HTTP keepalive on port {PORT}", flush=True)
 
 async def main():
+    global http_session
+
     await start_web()
-    await bot.start(bot_token=BOT_TOKEN)
+    http_session = web.ClientSession(
+        timeout=web.ClientTimeout(total=15)
+    )
+
     await client.connect()
     if not await client.is_user_authorized():
         raise SystemExit("Session expired. Generate a new session string.")
+
     asyncio.create_task(ping_loop())
-    print("✅ Listening to CoinSonarV2 | filter: Alerts in this hour: 3 + Buys", flush=True)
-    await client.run_until_disconnected()
+
+    print(
+        "✅ Listening to CoinSonarV2 | filter: Alerts in this hour: 3 + Buys",
+        flush=True,
+    )
+
+    try:
+        await client.run_until_disconnected()
+    finally:
+        if http_session is not None and not http_session.closed:
+            await http_session.close()
 
 if __name__ == "__main__":
     try:
