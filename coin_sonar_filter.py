@@ -21,8 +21,8 @@ SESSION_STRING = "1BJWap1wBu7zXC1n0i_ZEYU8tlQb7YatgCqbcBfVF_nsWzkeMZc0QHAq2OJhzj
 BOT_TOKEN = "8833328238:AAHD-03Tz7r2kCYxmHn4k62IGwafuv3tyjk"
 CHAT_ID = 1692583809
 
-# CoinSonarV2 Telegram chat/channel
-SOURCE_CHAT = "CoinSonarV2"
+# CoinSonarV2 source
+SOURCE_CHAT = "@CoinSonarV2"
 
 
 # ============================================================
@@ -33,46 +33,45 @@ client = TelegramClient(
     StringSession(SESSION_STRING),
     API_ID,
     API_HASH,
+
     connection=ConnectionTcpAbridged,
+
     connection_retries=10,
     retry_delay=1,
+
     auto_reconnect=True,
+
+    # Do not process old messages after startup
     catch_up=False,
+
     receive_updates=True,
+
     flood_sleep_threshold=0,
 )
 
 
-# One persistent HTTP connection for the Bot API
+# Persistent HTTP session
 http_session = None
 
 
 # ============================================================
-# EXACT FILTER
+# FILTER
 # ============================================================
 
 def should_notify(text):
-    """
-    Expected message:
-
-    1 $FIDA | #FIDAUSDT | TradingView
-    2 Price: ...
-    3 └1 min change: ...
-    4 26.2K USDT traded in 1 min
-    5 └Buys: 19.9K USDT [76%] 🟢
-    6 24h Vol: ...
-    7 Alerts in this hour: 3 ⭐
-
-    We require:
-
-    LINE 5 contains "Buys"
-    AND
-    LINE 7 contains "Alerts in this hour: 3"
-    """
 
     lines = text.splitlines()
 
-    # Need at least 7 lines
+    # We require exactly the structure we expect:
+    #
+    # line 1
+    # line 2
+    # line 3
+    # line 4
+    # line 5 = Buys
+    # line 6
+    # line 7 = Alerts in this hour: 3
+
     if len(lines) < 7:
         return False
 
@@ -81,15 +80,17 @@ def should_notify(text):
 
     return (
         "Buys" in line_5
-        and "Alerts in this hour: 3" in line_7
+        and
+        "Alerts in this hour: 3" in line_7
     )
 
 
 # ============================================================
-# SEND BOT NOTIFICATION
+# SEND BOT MESSAGE
 # ============================================================
 
 async def send_notification(text, source_age):
+
     global http_session
 
     url = (
@@ -106,6 +107,7 @@ async def send_notification(text, source_age):
     started = time.perf_counter()
 
     try:
+
         async with http_session.post(
             url,
             json=payload
@@ -113,31 +115,38 @@ async def send_notification(text, source_age):
 
             body = await response.text()
 
-            elapsed = time.perf_counter() - started
+            elapsed = (
+                time.perf_counter()
+                - started
+            )
 
             if response.status == 200:
 
                 print(
                     f"📤 NOTIFICATION SENT | "
-                    f"Bot API: {elapsed:.3f}s | "
-                    f"Source age: {source_age:.3f}s",
+                    f"API={elapsed:.3f}s | "
+                    f"SOURCE AGE={source_age:.3f}s",
                     flush=True,
                 )
 
-                return
+                return True
 
             print(
-                f"❌ Telegram API error "
+                f"❌ BOT API ERROR "
                 f"{response.status}: {body}",
                 flush=True,
             )
 
+            return False
+
     except Exception as e:
 
         print(
-            f"❌ Send error: {repr(e)}",
+            f"❌ SEND ERROR: {repr(e)}",
             flush=True,
         )
+
+        return False
 
 
 # ============================================================
@@ -164,84 +173,131 @@ async def message_handler(event):
         return
 
     # --------------------------------------------------------
-    # Measure delay between CoinSonar timestamp and our script
+    # MEASURE MESSAGE AGE
     # --------------------------------------------------------
 
     if message.date:
 
         source_age = max(
-            0,
+            0.0,
             received_at - message.date.timestamp()
         )
 
     else:
 
-        source_age = 0
+        source_age = 0.0
+
+    # --------------------------------------------------------
+    # LOG
+    # --------------------------------------------------------
 
     print(
-        f"\n📨 MESSAGE RECEIVED | "
-        f"AGE = {source_age:.3f}s",
+        "",
+        flush=True,
+    )
+
+    print(
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        flush=True,
+    )
+
+    print(
+        "📨 COINSONAR MESSAGE RECEIVED",
+        flush=True,
+    )
+
+    print(
+        f"⏱ SOURCE AGE: {source_age:.3f}s",
         flush=True,
     )
 
     # --------------------------------------------------------
-    # Show the important lines
+    # SHOW LINES 5 AND 7
     # --------------------------------------------------------
 
     lines = text.splitlines()
 
-    if len(lines) >= 7:
+    print(
+        f"📏 TOTAL LINES: {len(lines)}",
+        flush=True,
+    )
+
+    if len(lines) >= 5:
 
         print(
             f"LINE 5: {lines[4]}",
             flush=True,
         )
 
+    if len(lines) >= 7:
+
         print(
             f"LINE 7: {lines[6]}",
             flush=True,
         )
 
-    else:
-
-        print(
-            f"⚠️ Message has only {len(lines)} lines",
-            flush=True,
-        )
-
     # --------------------------------------------------------
-    # EXACT FILTER
+    # FILTER
     # --------------------------------------------------------
 
     filter_started = time.perf_counter()
 
-    if should_notify(text):
+    matched = should_notify(text)
 
-        filter_time = (
-            time.perf_counter()
-            - filter_started
-        )
+    filter_elapsed = (
+        time.perf_counter()
+        - filter_started
+    )
 
-        print(
-            f"✅ MATCH | "
-            f"filter={filter_time * 1000:.2f}ms",
-            flush=True,
-        )
-
-        # Send immediately
-        asyncio.create_task(
-            send_notification(
-                text,
-                source_age
-            )
-        )
-
-    else:
+    if not matched:
 
         print(
             "⏭️ NO MATCH",
             flush=True,
         )
+
+        print(
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            flush=True,
+        )
+
+        return
+
+    # --------------------------------------------------------
+    # MATCH
+    # --------------------------------------------------------
+
+    print(
+        "✅ MATCH!",
+        flush=True,
+    )
+
+    print(
+        f"⚡ FILTER: "
+        f"{filter_elapsed * 1000:.3f}ms",
+        flush=True,
+    )
+
+    # --------------------------------------------------------
+    # SEND IMMEDIATELY
+    # --------------------------------------------------------
+
+    asyncio.create_task(
+        send_notification(
+            text,
+            source_age
+        )
+    )
+
+    print(
+        "🚀 SEND TASK CREATED",
+        flush=True,
+    )
+
+    print(
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        flush=True,
+    )
 
 
 # ============================================================
@@ -256,27 +312,26 @@ async def connection_monitor():
 
         try:
 
-            if not client.is_connected():
-
-                print(
-                    "⚠️ Telegram disconnected. "
-                    "Reconnecting...",
-                    flush=True,
-                )
-
-                await client.connect()
-
-            else:
+            if client.is_connected():
 
                 print(
                     "💓 Telegram connection OK",
                     flush=True,
                 )
 
+            else:
+
+                print(
+                    "⚠️ Telegram disconnected",
+                    flush=True,
+                )
+
+                await client.connect()
+
         except Exception as e:
 
             print(
-                f"❌ Connection error: {repr(e)}",
+                f"❌ CONNECTION ERROR: {repr(e)}",
                 flush=True,
             )
 
@@ -289,68 +344,120 @@ async def main():
 
     global http_session
 
-    # Persistent HTTP session
+    # --------------------------------------------------------
+    # CREATE ONE PERSISTENT HTTP SESSION
+    # --------------------------------------------------------
+
     http_session = aiohttp.ClientSession(
         timeout=aiohttp.ClientTimeout(
             total=15
         )
     )
 
-    print(
-        "🔌 Connecting to Telegram...",
-        flush=True,
-    )
+    try:
 
-    await client.connect()
+        # ----------------------------------------------------
+        # CONNECT
+        # ----------------------------------------------------
 
-    if not await client.is_user_authorized():
-
-        raise SystemExit(
-            "❌ SESSION_STRING is not authorized."
+        print(
+            "🔌 Connecting to Telegram...",
+            flush=True,
         )
 
-    print(
-        "✅ Telegram connected",
-        flush=True,
-    )
+        await client.connect()
 
-    print(
-        f"🎯 Listening to: {SOURCE_CHAT}",
-        flush=True,
-    )
+        # ----------------------------------------------------
+        # AUTH CHECK
+        # ----------------------------------------------------
 
-    print(
-        "🎯 Rule:",
-        flush=True,
-    )
+        if not await client.is_user_authorized():
 
-    print(
-        '   LINE 5 contains "Buys"',
-        flush=True,
-    )
+            raise SystemExit(
+                "❌ Telegram session is not authorized."
+            )
 
-    print(
-        '   LINE 7 contains "Alerts in this hour: 3"',
-        flush=True,
-    )
+        print(
+            "✅ Telegram connected",
+            flush=True,
+        )
 
-    print(
-        "🚀 REAL-TIME LISTENER ACTIVE",
-        flush=True,
-    )
+        # ----------------------------------------------------
+        # SOURCE
+        # ----------------------------------------------------
 
-    asyncio.create_task(
-        connection_monitor()
-    )
+        print(
+            "",
+            flush=True,
+        )
 
-    try:
+        print(
+            f"🎯 Listening to: {SOURCE_CHAT}",
+            flush=True,
+        )
+
+        # ----------------------------------------------------
+        # FILTER
+        # ----------------------------------------------------
+
+        print(
+            "",
+            flush=True,
+        )
+
+        print(
+            "🎯 FILTER:",
+            flush=True,
+        )
+
+        print(
+            '   LINE 5 contains "Buys"',
+            flush=True,
+        )
+
+        print(
+            '   LINE 7 contains '
+            '"Alerts in this hour: 3"',
+            flush=True,
+        )
+
+        # ----------------------------------------------------
+        # READY
+        # ----------------------------------------------------
+
+        print(
+            "",
+            flush=True,
+        )
+
+        print(
+            "🚀 REAL-TIME LISTENER ACTIVE",
+            flush=True,
+        )
+
+        # ----------------------------------------------------
+        # CONNECTION MONITOR
+        # ----------------------------------------------------
+
+        asyncio.create_task(
+            connection_monitor()
+        )
+
+        # ----------------------------------------------------
+        # WAIT FOR TELEGRAM EVENTS
+        # ----------------------------------------------------
 
         await client.run_until_disconnected()
 
     finally:
 
-        if http_session:
+        if http_session is not None:
+
             await http_session.close()
+
+        if client.is_connected():
+
+            await client.disconnect()
 
 
 # ============================================================
@@ -359,4 +466,13 @@ async def main():
 
 if __name__ == "__main__":
 
-    asyncio.run(main())
+    try:
+
+        asyncio.run(main())
+
+    except KeyboardInterrupt:
+
+        print(
+            "🛑 Stopped",
+            flush=True,
+        )
