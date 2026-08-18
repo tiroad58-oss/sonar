@@ -11,15 +11,15 @@ from telethon.network import ConnectionTcpAbridged
 # CONFIG
 # ============================================================
 
-API_ID = YOUR_API_ID
-API_HASH = "YOUR_API_HASH"
+API_ID = 28807546
+API_HASH = "37624d57b1d83e6bb51b2db777658d0f"
 
 # Your Telegram USER session
-SESSION_STRING = "YOUR_SESSION_STRING"
+SESSION_STRING = "1BJWap1wBuzx_OTCt3Xy_83N0Eej5M2__CbVLaXQzxovBXmIbsigVPf9zGOhGRecDxzzU046J-Dg91Oftjxs6vjKHKZqzj-dWrgWOOTvOPjaskIVttRunbZo36Glu4lFv3WDL11YBOZHvvKvJWWhMIT3xoI5icLC2XS6fmx-nvA7uBJoa7UVcyYsaYDVvrBgwqM0d08R0z6iLrbDfz1tP4CFukIafcWIMEyhE84jgXRtTRBkFPboXhL-zmpfkBdsSFDPuP2U5cu8y1BCd2XPiNmjZA2BDFcogTXHcD9BWPbznNLZ6My4SVh1rCp-G7beTbnZOa6KV0QSgRGRWIQKvvT3EQ7j0-9Q="
 
 # Your Telegram BOT
-BOT_TOKEN = "YOUR_BOT_TOKEN"
-CHAT_ID = YOUR_CHAT_ID
+BOT_TOKEN = "7913078821:AAH_jUTHXlFx66daqBkYY7mKw7UZnwpp_A0"
+CHAT_ID = 1692583809
 
 # CoinSonarV2 Telegram chat/channel
 SOURCE_CHAT = "CoinSonarV2"
