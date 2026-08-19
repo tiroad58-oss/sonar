@@ -1,20 +1,23 @@
-import re
+import os
 import time
 import requests
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 
-# --- Telegram API Credentials ---
-api_id = '28807546'
-api_hash = '37624d57b1d83e6bb51b2db777658d0f'
+# --- 1. Read Credentials from Railway Environment Variables ---
+api_id = int(os.environ.get("API_ID"))
+api_hash = os.environ.get("API_HASH")
 group_username = 'CoinSonarV2'
 
-# --- Bot Notification Credentials ---
-BOT_TOKEN = '8833328238:AAHD-03Tz7r2kCYxmHn4k62IGwafuv3tyjk'      # e.g., '123456789:ABCdefGHIjklMNOpqrsTUVwxyz'
-CHAT_ID = '1692583809'          # e.g., '123456789'
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")
+SESSION_STRING = os.environ.get("SESSION_STRING")
 
+# --- 2. Initialize Telegram Client with String Session ---
+# This allows the script to run on Railway without needing a local .session file
+client = TelegramClient(StringSession(SESSION_STRING), api_id, api_hash)
 
-client = TelegramClient('coin_sonar_monitor', api_id, api_hash)
-
+# --- 3. Bot Notification Function ---
 def send_bot_notification(message_text):
     """Sends the exact raw message to you via your custom Telegram Bot."""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -36,18 +39,17 @@ def send_bot_notification(message_text):
         print(f"❌ Error sending notification: {e}")
         return False
 
+# --- 4. Message Handler ---
 @client.on(events.NewMessage(chats=group_username))
 async def handler(event):
     message_text = event.raw_text
     
-    # Condition 1: Must contain "Buys"
+    # Check conditions
     has_buys = "Buys" in message_text
-    
-    # Condition 2: Must contain "Alerts in this hour: 3"
     has_alerts = "Alerts in this hour: 3" in message_text
     
     if has_buys and has_alerts:
-        # Start timer exactly when the message is received and conditions are met
+        # Start timer exactly when conditions are met
         start_time = time.time()
         
         print("✅ Conditions met! Triggering bot notification...")
@@ -65,6 +67,7 @@ async def handler(event):
         else:
             print("❌ Notification failed to send.")
 
+# --- 5. Start the Client ---
 print(f"👂 Listening for new messages in @{group_username}...")
 client.start()
 client.run_until_disconnected()
